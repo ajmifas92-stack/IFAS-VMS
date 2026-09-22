@@ -1,0 +1,504 @@
+name: IFAS VMS Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+
+      # ==========================================
+      # 1. CHECKOUT
+      # ==========================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ==========================================
+      # 2. SETUP .NET 8
+      # ==========================================
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+
+      # ==========================================
+      # 3. CHECK ZIP
+      # ==========================================
+
+      - name: Check V3 ZIP
+        shell: pwsh
+        run: |
+
+          $zip = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "IFAS-VMS-COMPLETE-PRODUCT-V3.zip"
+
+          Write-Host "Checking ZIP:"
+          Write-Host $zip
+
+          if (-not (Test-Path $zip)) {
+            Write-Error "IFAS-VMS-COMPLETE-PRODUCT-V3.zip was not found."
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "ZIP FOUND SUCCESSFULLY."
+
+
+      # ==========================================
+      # 4. EXTRACT SOURCE
+      # ==========================================
+
+      - name: Extract V3 Source
+        shell: pwsh
+        run: |
+
+          $zip = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "IFAS-VMS-COMPLETE-PRODUCT-V3.zip"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path source | Out-Null
+
+          Expand-Archive `
+            -Path $zip `
+            -DestinationPath source `
+            -Force
+
+          Write-Host ""
+          Write-Host "SOURCE EXTRACTION COMPLETED."
+
+
+      # ==========================================
+      # 5. SHOW PROJECT STRUCTURE
+      # ==========================================
+
+      - name: Show Project Structure
+        shell: pwsh
+        run: |
+
+          Write-Host "Searching for solution and projects..."
+
+          Get-ChildItem `
+            -Path source `
+            -Include "*.sln","*.csproj" `
+            -File `
+            -Recurse |
+            ForEach-Object {
+              Write-Host $_.FullName
+            }
+
+
+      # ==========================================
+      # 6. FIX VMS CLIENT WPF
+      # ==========================================
+
+      - name: Fix VMS Client WPF
+        shell: pwsh
+        run: |
+
+          $project = Get-ChildItem `
+            -Path source `
+            -Filter "IFAS.VMS.Client.csproj" `
+            -File `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $project) {
+            Write-Host "VMS Client project not found."
+            exit 0
+          }
+
+          Write-Host "Fixing VMS Client:"
+          Write-Host $project.FullName
+
+          $path = $project.FullName
+          $content = Get-Content $path -Raw
+
+          $content = $content.Replace(
+            "Microsoft.NET.Sdk.WindowsDesktop",
+            "Microsoft.NET.Sdk"
+          )
+
+          if ($content -notmatch "<UseWPF>true</UseWPF>") {
+
+            $content = $content.Replace(
+              "</PropertyGroup>",
+              "    <UseWPF>true</UseWPF>`r`n  </PropertyGroup>",
+              1
+            )
+          }
+
+          Set-Content `
+            -Path $path `
+            -Value $content `
+            -Encoding UTF8
+
+          Write-Host "VMS Client WPF fix completed."
+
+
+      # ==========================================
+      # 7. FIX VMS CLIENT APP.XAML.CS
+      # ==========================================
+
+      - name: Fix VMS Client App
+        shell: pwsh
+        run: |
+
+          $file = Get-ChildItem `
+            -Path source `
+            -Filter "App.xaml.cs" `
+            -File `
+            -Recurse |
+            Where-Object {
+              $_.FullName -match "03-IFAS-VMS-CLIENT"
+            } |
+            Select-Object -First 1
+
+          if (-not $file) {
+            Write-Host "Client App.xaml.cs not found."
+            exit 0
+          }
+
+          Write-Host "Fixing:"
+          Write-Host $file.FullName
+
+          $path = $file.FullName
+          $content = Get-Content $path -Raw
+
+          $content = $content.Replace(
+            ": Application",
+            ": System.Windows.Application"
+          )
+
+          Set-Content `
+            -Path $path `
+            -Value $content `
+            -Encoding UTF8
+
+          Write-Host "Client App.xaml.cs fixed."
+
+
+      # ==========================================
+      # 8. FIX LICENSE MANAGER ROOT PROJECT
+      # ==========================================
+
+      - name: Fix License Manager Project
+        shell: pwsh
+        run: |
+
+          $project = Get-ChildItem `
+            -Path source `
+            -Filter "IFAS.LicenseManager.csproj" `
+            -File `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $project) {
+            Write-Host "License Manager project not found."
+            exit 0
+          }
+
+          Write-Host "Fixing:"
+          Write-Host $project.FullName
+
+          $path = $project.FullName
+          $content = Get-Content $path -Raw
+
+          if ($content -notmatch 'Compile Remove="IFAS.LicenseCreator.Desktop') {
+
+            $removeBlock = @'
+
+  <ItemGroup>
+    <Compile Remove="IFAS.LicenseCreator.Desktop\**" />
+    <EmbeddedResource Remove="IFAS.LicenseCreator.Desktop\**" />
+    <None Remove="IFAS.LicenseCreator.Desktop\**" />
+    <Content Remove="IFAS.LicenseCreator.Desktop\**" />
+  </ItemGroup>
+'@
+
+            $content = $content.Replace(
+              "</Project>",
+              $removeBlock + "`r`n</Project>"
+            )
+          }
+
+          Set-Content `
+            -Path $path `
+            -Value $content `
+            -Encoding UTF8
+
+          Write-Host "License Manager project fixed."
+
+
+      # ==========================================
+      # 9. FIX LICENSE CREATOR DESKTOP
+      # ==========================================
+
+      - name: Fix License Creator Desktop
+        shell: pwsh
+        run: |
+
+          $project = Get-ChildItem `
+            -Path source `
+            -Filter "IFAS.LicenseCreator.Desktop.csproj" `
+            -File `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $project) {
+            Write-Host "License Creator Desktop project not found."
+            exit 0
+          }
+
+          Write-Host "Fixing:"
+          Write-Host $project.FullName
+
+          $path = $project.FullName
+          $content = Get-Content $path -Raw
+
+          $content = $content.Replace(
+            "Microsoft.NET.Sdk.WindowsDesktop",
+            "Microsoft.NET.Sdk"
+          )
+
+          if ($content -notmatch "<UseWPF>true</UseWPF>") {
+
+            $content = $content.Replace(
+              "</PropertyGroup>",
+              "    <UseWPF>true</UseWPF>`r`n  </PropertyGroup>",
+              1
+            )
+          }
+
+          Set-Content `
+            -Path $path `
+            -Value $content `
+            -Encoding UTF8
+
+          Write-Host "License Creator Desktop WPF fixed."
+
+
+      # ==========================================
+      # 10. FIX LICENSE CREATOR SOURCE
+      # ==========================================
+
+      - name: Fix License Creator Source
+        shell: pwsh
+        run: |
+
+          $files = Get-ChildItem `
+            -Path source `
+            -Filter "*.cs" `
+            -File `
+            -Recurse |
+            Where-Object {
+              $_.FullName -match "IFAS.LicenseCreator.Desktop"
+            }
+
+          foreach ($file in $files) {
+
+            Write-Host "Checking:"
+            Write-Host $file.FullName
+
+            $path = $file.FullName
+            $content = Get-Content $path -Raw
+
+            if (
+              $content -match '\bApplication\b' -or
+              $content -match '\bWindow\b' -or
+              $content -match '\bRoutedEventArgs\b'
+            ) {
+
+              if ($content -notmatch 'using System\.Windows;') {
+
+                $content =
+                  "using System.Windows;`r`n" +
+                  $content
+              }
+            }
+
+            $content = $content.Replace(
+              ": Application",
+              ": System.Windows.Application"
+            )
+
+            Set-Content `
+              -Path $path `
+              -Value $content `
+              -Encoding UTF8
+          }
+
+          Write-Host "License Creator source fixed."
+
+
+      # ==========================================
+      # 11. FIX SERVER LICENSE SERVICE
+      # ==========================================
+
+      - name: Fix Server LicenseService
+        shell: pwsh
+        run: |
+
+          $file = Get-ChildItem `
+            -Path source `
+            -Filter "LicenseService.cs" `
+            -File `
+            -Recurse |
+            Where-Object {
+              $_.FullName -match "01-IFAS-VMS-SERVER"
+            } |
+            Select-Object -First 1
+
+          if (-not $file) {
+            Write-Host "Server LicenseService.cs not found."
+            exit 0
+          }
+
+          Write-Host "Fixing:"
+          Write-Host $file.FullName
+
+          $path = $file.FullName
+          $content = Get-Content $path -Raw
+
+          if ($content -notmatch 'using Microsoft\.EntityFrameworkCore;') {
+
+            $content =
+              "using Microsoft.EntityFrameworkCore;`r`n" +
+              $content
+          }
+
+          Set-Content `
+            -Path $path `
+            -Value $content `
+            -Encoding UTF8
+
+          Write-Host "Server LicenseService fixed."
+
+
+      # ==========================================
+      # 12. FIND SOLUTION
+      # ==========================================
+
+      - name: Find Solution
+        shell: pwsh
+        run: |
+
+          $sln = Get-ChildItem `
+            -Path source `
+            -Filter "*.sln" `
+            -File `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $sln) {
+            Write-Error "No Visual Studio solution found."
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "SOLUTION FOUND:"
+          Write-Host $sln.FullName
+
+          "SOLUTION=$($sln.FullName)" >> $env:GITHUB_ENV
+
+
+      # ==========================================
+      # 13. RESTORE
+      # ==========================================
+
+      - name: Restore NuGet Packages
+        run: |
+          dotnet restore "$env:SOLUTION"
+
+
+      # ==========================================
+      # 14. BUILD
+      # ==========================================
+
+      - name: Build Solution
+        run: |
+          dotnet build "$env:SOLUTION" `
+            -c Release `
+            --no-restore
+
+
+      # ==========================================
+      # 15. PUBLISH
+      # ==========================================
+
+      - name: Publish Applications
+        shell: pwsh
+        run: |
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path publish | Out-Null
+
+          $projects = Get-ChildItem `
+            -Path source `
+            -Filter "*.csproj" `
+            -File `
+            -Recurse
+
+          foreach ($project in $projects) {
+
+            Write-Host ""
+            Write-Host "Publishing:"
+            Write-Host $project.FullName
+
+            $name = $project.BaseName
+
+            dotnet publish `
+              $project.FullName `
+              -c Release `
+              -r win-x64 `
+              --self-contained true `
+              -p:PublishSingleFile=true `
+              -p:IncludeNativeLibrariesForSelfExtract=true `
+              -o "publish/$name"
+          }
+
+
+      # ==========================================
+      # 16. CREATE WINDOWS ZIP
+      # ==========================================
+
+      - name: Create Windows Build ZIP
+        shell: pwsh
+        run: |
+
+          if (-not (Test-Path "publish")) {
+            Write-Error "Publish folder was not created."
+            exit 1
+          }
+
+          Compress-Archive `
+            -Path "publish/*" `
+            -DestinationPath "IFAS-VMS-WIN-X64.zip" `
+            -Force
+
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host "IFAS VMS WINDOWS BUILD CREATED"
+          Write-Host "======================================"
+
+
+      # ==========================================
+      # 17. UPLOAD ARTIFACT
+      # ==========================================
+
+      - name: Upload Windows Build
+        uses: actions/upload-artifact@v4
+        with:
+          name: IFAS-VMS-WIN-X64
+          path: IFAS-VMS-WIN-X64.zip
