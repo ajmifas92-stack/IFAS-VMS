@@ -1,36 +1,117 @@
-# This is a basic workflow to help you get started with Actions
+name: IFAS VMS Windows Build
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
   build:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
+    name: Build IFAS VMS
+    runs-on: windows-latest
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
 
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      - name: Verify V3 ZIP
+        shell: pwsh
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          $zip = Join-Path $env:GITHUB_WORKSPACE "IFAS-VMS-COMPLETE-PRODUCT-V3.zip"
+
+          if (-not (Test-Path $zip)) {
+            Write-Error "IFAS-VMS-COMPLETE-PRODUCT-V3.zip not found."
+            exit 1
+          }
+
+          Write-Host "ZIP FOUND: $zip"
+
+      - name: Extract V3 Source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path source | Out-Null
+
+          Expand-Archive `
+            -Path "IFAS-VMS-COMPLETE-PRODUCT-V3.zip" `
+            -DestinationPath source `
+            -Force
+
+          Write-Host "Source extracted."
+
+      - name: Find Solution
+        shell: pwsh
+        run: |
+          $sln = Get-ChildItem `
+            -Path source `
+            -Filter "*.sln" `
+            -File `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $sln) {
+            Write-Error "No .sln file found."
+            exit 1
+          }
+
+          Write-Host "Solution: $($sln.FullName)"
+          "SOLUTION=$($sln.FullName)" >> $env:GITHUB_ENV
+
+      - name: Restore
+        run: |
+          dotnet restore "$env:SOLUTION"
+
+      - name: Build
+        run: |
+          dotnet build "$env:SOLUTION" `
+            -c Release `
+            --no-restore
+
+      - name: Publish Windows x64
+        shell: pwsh
+        run: |
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path publish | Out-Null
+
+          $projects = Get-ChildItem `
+            -Path source `
+            -Filter "*.csproj" `
+            -File `
+            -Recurse
+
+          foreach ($project in $projects) {
+
+            $name = $project.BaseName
+
+            Write-Host "Publishing $name"
+
+            dotnet publish `
+              $project.FullName `
+              -c Release `
+              -r win-x64 `
+              --self-contained true `
+              -p:PublishSingleFile=true `
+              -p:IncludeNativeLibrariesForSelfExtract=true `
+              -o "publish/$name"
+          }
+
+      - name: Create Windows ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "publish/*" `
+            -DestinationPath "IFAS-VMS-WIN-X64.zip" `
+            -Force
+
+          Write-Host "Windows ZIP created."
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IFAS-VMS-WIN-X64
+          path: IFAS-VMS-WIN-X64.zip
+          if-no-files-found: error
